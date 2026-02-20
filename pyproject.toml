@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "invoices"
+version = "0.1.0"
+description = "Local-first invoice processing CLI"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "typer>=0.12",
+  "openpyxl>=3.1",
+  "python-dateutil>=2.9",
+  "requests>=2.31",
+  "pydantic>=2.8",
+  "google-api-python-client>=2.149",
+  "google-auth>=2.35",
+  "google-auth-oauthlib>=1.2",
+  "google-auth-httplib2>=0.2",
+  "python-dotenv>=1.0",
+  "pypdf>=5.0",
+]
+
+[project.scripts]
+invoices = "invoices.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["invoices*"]
