@@ -5,6 +5,7 @@ import logging
 import mimetypes
 import re
 import uuid
+from html import unescape
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -43,6 +44,7 @@ def build_logger(log_path: Path) -> logging.Logger:
 
 def extract_links(text: str) -> list[str]:
     """Extract HTTP/HTTPS links from text, stripping trailing punctuation."""
+    text = unescape(text)
     links = re.findall(r"https?://[^\s<>'\"]+", text)
     # Strip common trailing punctuation that shouldn't be part of URLs
     return [link.rstrip(')]},.;:!?') for link in links]
@@ -127,7 +129,8 @@ def process_new_email(config: AppConfig) -> dict[str, int]:
 
         body_text = ""
         for part in _payload_parts(msg["payload"]):
-            if part.get("mimeType", "").startswith("text/plain") and part.get("body", {}).get("data"):
+            mime_type = part.get("mimeType", "")
+            if mime_type.startswith(("text/plain", "text/html")) and part.get("body", {}).get("data"):
                 body_text += decode_b64url(part["body"]["data"]).decode("utf-8", errors="ignore")
         for link in extract_links(body_text):
             try:

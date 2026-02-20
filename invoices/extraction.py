@@ -22,6 +22,10 @@ VAT_RE = re.compile(
     re.I,
 )
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tiff"}
+VENDOR_LINE_RE = re.compile(
+    r"(?:supplier|vendor|dodavatel|dodavatel[ée]?|from|vystavil|issuer)\s*[:\-]?\s*([^\n\r]{2,80})",
+    re.I,
+)
 
 
 def _validate(result: ExtractionResult) -> ExtractionResult:
@@ -82,6 +86,22 @@ def _normalize_date(raw_value: str | None) -> str | None:
         return parsed.date().isoformat()
     except Exception:
         return raw_value
+
+
+def _extract_vendor_name(text: str, path: Path) -> str | None:
+    match = VENDOR_LINE_RE.search(text)
+    if match:
+        vendor = re.split(r"\s{2,}", match.group(1).strip())[0].strip(" ,.-")
+        if vendor:
+            return vendor
+
+    # Fallback to filename-derived value (without UUID prefixes from staging)
+    stem = path.stem
+    stem = re.sub(r"^[0-9a-f]{8,32}_", "", stem, flags=re.I)
+    if "_" in stem:
+        guess = stem.split("_")[0].strip(" -")
+        return guess or None
+    return None
 
 
 def _ocr_image(path: Path, ocr_languages: str) -> str:
@@ -157,7 +177,7 @@ def extract_invoice(path: Path, enable_ocr: bool = True, ocr_languages: str = "e
     date = _normalize_date(date_match.group(0) if date_match else None)
     total_match = TOTAL_RE.search(text)
     total = float(total_match.group(1).replace(",", ".")) if total_match else None
-    vendor = path.stem.split("_")[0] if "_" in path.stem else None
+    vendor = _extract_vendor_name(text, path)
     vat_match = VAT_RE.search(text)
     vat = vat_match.group(1).strip() if vat_match else ""
     language = _detect_language(text)

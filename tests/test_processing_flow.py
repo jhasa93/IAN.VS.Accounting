@@ -53,7 +53,11 @@ def _install_dependency_stubs() -> None:
 
     if "google.oauth2.service_account" not in sys.modules:
         google = types.ModuleType("google")
+        auth = types.ModuleType("google.auth")
+        transport = types.ModuleType("google.auth.transport")
+        requests_transport = types.ModuleType("google.auth.transport.requests")
         oauth2 = types.ModuleType("google.oauth2")
+        credentials_mod = types.ModuleType("google.oauth2.credentials")
         service_account = types.ModuleType("google.oauth2.service_account")
 
         class Credentials:
@@ -61,12 +65,43 @@ def _install_dependency_stubs() -> None:
             def from_service_account_file(path, scopes=None):
                 return object()
 
+            @staticmethod
+            def from_authorized_user_file(path, scopes=None):
+                return object()
+
         service_account.Credentials = Credentials
+        credentials_mod.Credentials = Credentials
+        requests_transport.Request = object
+        transport.requests = requests_transport
+        auth.transport = transport
+        google.auth = auth
         oauth2.service_account = service_account
         google.oauth2 = oauth2
         sys.modules["google"] = google
+        sys.modules["google.auth"] = auth
+        sys.modules["google.auth.transport"] = transport
+        sys.modules["google.auth.transport.requests"] = requests_transport
         sys.modules["google.oauth2"] = oauth2
+        sys.modules["google.oauth2.credentials"] = credentials_mod
         sys.modules["google.oauth2.service_account"] = service_account
+
+    if "google_auth_oauthlib.flow" not in sys.modules:
+        google_auth_oauthlib = types.ModuleType("google_auth_oauthlib")
+        flow_mod = types.ModuleType("google_auth_oauthlib.flow")
+
+        class InstalledAppFlow:
+            @staticmethod
+            def from_client_secrets_file(path, scopes):
+                class _Flow:
+                    def run_local_server(self, port=0):
+                        return object()
+
+                return _Flow()
+
+        flow_mod.InstalledAppFlow = InstalledAppFlow
+        google_auth_oauthlib.flow = flow_mod
+        sys.modules["google_auth_oauthlib"] = google_auth_oauthlib
+        sys.modules["google_auth_oauthlib.flow"] = flow_mod
 
     if "googleapiclient.discovery" not in sys.modules:
         googleapiclient = types.ModuleType("googleapiclient")
@@ -169,6 +204,8 @@ class FakeExtraction:
     tax_amount = None
     total_amount = 100.0
     category = None
+    vendor_vat = ""
+    language = "en"
     confidence = 0.95
     valid = True
     validation_errors = []
@@ -189,7 +226,7 @@ class ProcessingFlowTests(unittest.TestCase):
                 gmail_label="INBOX",
                 gmail_processed_label="INVOICE_PROCESSED",
                 drive_root_folder_id="drive-root",
-                workbook_path=str(ledger_path),
+                spreadsheet_id=str(ledger_path),
                 staging_dir=str(staging),
                 queue_path=str(queue_path),
                 state_path=str(state_path),
@@ -218,10 +255,10 @@ class ProcessingFlowTests(unittest.TestCase):
 
             processed_marks = []
 
-            def fake_append_or_update_record(path, record):
-                Path(path).write_text(record.model_dump_json(indent=2), encoding="utf-8")
+            def fake_append_or_update_record(_sheets, spreadsheet_id, record):
+                Path(spreadsheet_id).write_text(record.model_dump_json(indent=2), encoding="utf-8")
 
-            with patch("invoices.processing.build_services", return_value=(object(), object())), \
+            with patch("invoices.processing.build_services", return_value=(object(), object(), object())), \
                 patch("invoices.processing.fetch_new_messages", return_value=[mock_message]), \
                 patch("invoices.processing.ensure_gmail_label", return_value="lbl-processed"), \
                 patch("invoices.processing.ensure_folder", side_effect=["year-folder", "month-folder"]), \
@@ -261,6 +298,48 @@ class ProcessingFlowTests(unittest.TestCase):
             mime_type="image/jpeg",
             file_bytes=b"\xff\xd8\xff\xe0 fake jpeg bytes",
         )
+
+    def test_fetch_downloads_link_from_html_body(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staging = root / "staging"
+            cfg = AppConfig(
+                credentials_path=str(root / "creds.json"),
+                gmail_label="INBOX",
+                gmail_processed_label="INVOICE_PROCESSED",
+                drive_root_folder_id="drive-root",
+                spreadsheet_id=str(root / "master_ledger.xlsx"),
+                staging_dir=str(staging),
+                queue_path=str(root / "queue.json"),
+                state_path=str(root / "state.json"),
+                log_path=str(root / "invoices.log"),
+                backup_dir=str(root / "backups"),
+            )
+
+            html = '<a href="https://www.zasilkovna.cz/api/invoice.pdf?token=test">invoice</a>'
+            html_data = base64.urlsafe_b64encode(html.encode()).decode()
+            mock_message = {
+                "id": "msg-html-link",
+                "internalDate": "1700000000000",
+                "payload": {
+                    "headers": [{"name": "From", "value": "vendor@example.com"}],
+                    "parts": [{"filename": "", "mimeType": "text/html", "body": {"data": html_data}}],
+                },
+            }
+
+            with patch("invoices.processing.build_services", return_value=(object(), object(), object())), \
+                patch("invoices.processing.fetch_new_messages", return_value=[mock_message]), \
+                patch("invoices.processing.ensure_gmail_label", return_value="lbl-processed"), \
+                patch("invoices.processing.download_link", return_value=staging / "invoice.pdf") as dl_mock, \
+                patch("invoices.processing.extract_invoice", return_value=FakeExtraction()), \
+                patch("invoices.processing.ensure_folder", side_effect=["year-folder", "month-folder"]), \
+                patch("invoices.processing.upload_invoice_file", return_value=("drive-file-1", True)), \
+                patch("invoices.processing.append_or_update_record"), \
+                patch("invoices.processing.mark_message_processed"):
+                result = process_new_email(cfg)
+
+            self.assertEqual(result["items_queued"], 1)
+            dl_mock.assert_called_once()
 
 
 if __name__ == "__main__":

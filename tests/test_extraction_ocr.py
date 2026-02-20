@@ -94,6 +94,16 @@ class ExtractionOCRTests(unittest.TestCase):
             ocr_mock.assert_not_called()
             self.assertFalse(result.valid)
 
+    def test_vendor_name_extracted_from_supplier_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "0f12abcd_invoice.pdf"
+            path.write_bytes(b"%PDF-1.4")
+            text = "Supplier\nMoctezuma Foods s.r.o.\nInvoice - tax document 20260106\nTotal amount: 235.20 CZK\nDate of issue: 19.02.2026"
+            with patch("invoices.extraction._extract_text", return_value=text):
+                result = extract_invoice(path, enable_ocr=True)
+
+            self.assertEqual(result.vendor_name, "Moctezuma Foods s.r.o")
+
 
 if __name__ == "__main__":
     unittest.main()
