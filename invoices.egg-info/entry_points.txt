@@ -1,0 +1,2 @@
+[console_scripts]
+invoices = invoices.cli:app
