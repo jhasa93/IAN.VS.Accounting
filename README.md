@@ -20,11 +20,14 @@ Implements the local-first invoice processing epic from `INVOICE_PROCESSING_EPIC
    - `gmail_label` (label ID)
    - `drive_root_folder_id`
    - `workbook_path`
+   - optional `enable_ocr` and `ocr_languages`
 5. Run `invoices doctor`.
 6. Run `invoices fetch-email`.
 
 ## Processing Notes
 - Supported files: PDF, CSV, XLSX/XLS, PNG/JPG/JPEG/TIFF.
+- OCR is supported for image attachments and scanned PDFs when `pytesseract` is available (with optional `pdf2image` for scanned PDF pages).
+- Default OCR language pack is `eng+deu+spa+ces` (English, German, Spanish, Czech) and is configurable via `ocr_languages`.
 - Links in email bodies are downloaded when file extension is supported.
 - Records with missing required fields are marked `Needs Review` and remain in local queue.
 - Finalized records are uploaded to Drive under `Invoices/YYYY/MM` and written to Excel workbook.

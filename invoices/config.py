@@ -18,6 +18,8 @@ class AppConfig(BaseModel):
     state_path: str = "./data/state.json"
     log_path: str = "./data/invoices.log"
     backup_dir: str = "./data/backups"
+    enable_ocr: bool = True
+    ocr_languages: str = "eng+deu+spa+ces"
 
 
 DEFAULT_CONFIG_PATH = Path("./invoices.config.json")

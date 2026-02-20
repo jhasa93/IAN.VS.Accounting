@@ -10,10 +10,14 @@ from pypdf import PdfReader
 
 from .models import ExtractionResult
 
-CURRENCY_RE = re.compile(r"\b(USD|EUR|GBP|AUD|CAD|INR)\b", re.I)
-DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
-INVOICE_RE = re.compile(r"invoice\s*(?:#|number)?\s*[:\-]?\s*([A-Z0-9\-]+)", re.I)
-TOTAL_RE = re.compile(r"\btotal\b\s*[:\-]?\s*([0-9]+(?:\.[0-9]{1,2})?)", re.I)
+CURRENCY_RE = re.compile(r"\b(USD|EUR|GBP|AUD|CAD|INR|CZK)\b", re.I)
+DATE_RE = re.compile(r"\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[./]\d{1,2}[./]\d{4})\b")
+INVOICE_RE = re.compile(
+    r"(?:invoice|faktura|factura|rechnung)\s*(?:#|number|no|num(?:ero)?|cislo|č(?:\.|\s*)?íslo)?\s*[:\-]?\s*((?=[A-Z0-9\-/]*\d)[A-Z0-9\-/]+)",
+    re.I,
+)
+TOTAL_RE = re.compile(r"(?:total|celkem|gesamt)\s*[:\-]?\s*([0-9]+(?:[.,][0-9]{1,2})?)", re.I)
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tiff"}
 
 
 def _validate(result: ExtractionResult) -> ExtractionResult:
@@ -35,14 +39,52 @@ def _validate(result: ExtractionResult) -> ExtractionResult:
     return result
 
 
-def _extract_text(path: Path) -> str:
-    if path.suffix.lower() == ".pdf":
+def _normalize_date(raw_value: str | None) -> str | None:
+    if not raw_value:
+        return None
+    try:
+        parsed = parse_date(raw_value, dayfirst=True)
+        return parsed.date().isoformat()
+    except Exception:
+        return raw_value
+
+
+def _ocr_image(path: Path, ocr_languages: str) -> str:
+    try:
+        from PIL import Image
+        import pytesseract
+    except Exception:
+        return ""
+    return pytesseract.image_to_string(Image.open(path), lang=ocr_languages)
+
+
+def _ocr_pdf(path: Path, ocr_languages: str) -> str:
+    try:
+        from pdf2image import convert_from_path
+        import pytesseract
+    except Exception:
+        return ""
+
+    pages = convert_from_path(str(path))
+    return "\n".join(pytesseract.image_to_string(page, lang=ocr_languages) for page in pages)
+
+
+def _extract_text(path: Path, enable_ocr: bool = True, ocr_languages: str = "eng+deu+spa+ces") -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
         reader = PdfReader(str(path))
-        return "\n".join((p.extract_text() or "") for p in reader.pages)
+        text = "\n".join((p.extract_text() or "") for p in reader.pages)
+        if text.strip() or not enable_ocr:
+            return text
+        return _ocr_pdf(path, ocr_languages)
+    if suffix in IMAGE_SUFFIXES:
+        if not enable_ocr:
+            return ""
+        return _ocr_image(path, ocr_languages)
     return path.read_text(encoding="utf-8", errors="ignore")
 
 
-def extract_invoice(path: Path) -> ExtractionResult:
+def extract_invoice(path: Path, enable_ocr: bool = True, ocr_languages: str = "eng+deu+spa+ces") -> ExtractionResult:
     suffix = path.suffix.lower()
     if suffix == ".csv":
         with path.open("r", encoding="utf-8", errors="ignore") as f:
@@ -51,7 +93,7 @@ def extract_invoice(path: Path) -> ExtractionResult:
         res = ExtractionResult(
             vendor_name=row.get("vendor") or row.get("Vendor"),
             invoice_number=row.get("invoice_number") or row.get("InvoiceNumber"),
-            invoice_date=row.get("invoice_date") or row.get("InvoiceDate"),
+            invoice_date=_normalize_date(row.get("invoice_date") or row.get("InvoiceDate")),
             currency=row.get("currency") or row.get("Currency"),
             total_amount=float(row["total_amount"]) if row.get("total_amount") else None,
             confidence=0.95 if row else 0.2,
@@ -66,18 +108,20 @@ def extract_invoice(path: Path) -> ExtractionResult:
         res = ExtractionResult(
             vendor_name=m.get("vendor") or m.get("Vendor"),
             invoice_number=m.get("invoice_number") or m.get("InvoiceNumber"),
-            invoice_date=str(m.get("invoice_date") or m.get("InvoiceDate") or ""),
+            invoice_date=_normalize_date(str(m.get("invoice_date") or m.get("InvoiceDate") or "")),
             currency=m.get("currency") or m.get("Currency"),
             total_amount=float(m["total_amount"]) if m.get("total_amount") is not None else None,
             confidence=0.9,
         )
         return _validate(res)
 
-    text = _extract_text(path)
+    text = _extract_text(path, enable_ocr=enable_ocr, ocr_languages=ocr_languages)
     currency = (CURRENCY_RE.search(text).group(1).upper() if CURRENCY_RE.search(text) else None)
     inv_no = INVOICE_RE.search(text).group(1) if INVOICE_RE.search(text) else None
-    date = DATE_RE.search(text).group(0) if DATE_RE.search(text) else None
-    total = float(TOTAL_RE.search(text).group(1)) if TOTAL_RE.search(text) else None
+    date_match = DATE_RE.search(text)
+    date = _normalize_date(date_match.group(0) if date_match else None)
+    total_match = TOTAL_RE.search(text)
+    total = float(total_match.group(1).replace(",", ".")) if total_match else None
     vendor = path.stem.split("_")[0] if "_" in path.stem else None
     res = ExtractionResult(
         vendor_name=vendor,

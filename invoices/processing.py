@@ -119,7 +119,11 @@ def process_new_email(config: AppConfig) -> dict[str, int]:
         message_had_filed = False
 
         for staged_path, source_type in staged_files:
-            result = extract_invoice(staged_path)
+            result = extract_invoice(
+                staged_path,
+                enable_ocr=config.enable_ocr,
+                ocr_languages=config.ocr_languages,
+            )
             item = QueueItem(
                 internal_id=uuid.uuid4().hex,
                 source_type=source_type,  # type: ignore[arg-type]
