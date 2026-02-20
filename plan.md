@@ -4,7 +4,7 @@
 Operate and evolve the `invoices` CLI so it remains reliable for manual, local-first invoice processing with Google Gmail + Drive and a local Excel ledger.
 
 ## Current System Snapshot
-- **Delivery status**: MVP flows are implemented (init/doctor/fetch/reconcile/queue/backup).
+- **Delivery status**: MVP flows are implemented (init/doctor/fetch/reconcile/queue/backup), plus an optional local desktop UI launcher (`invoices ui`) for non-CLI operators.
 - **Core stack**: Python 3.10+, Typer CLI, Pydantic models, OpenPyXL ledger writes, Google API client, requests, pypdf, optional OCR (`pytesseract`, optional `pdf2image`).
 - **Primary risk areas**:
   1. External API integration assumptions (service-account-only auth model).
@@ -51,6 +51,7 @@ Follow this sequence unless task-specific constraints require otherwise:
   - `invoices queue list`
   - `invoices reconcile-ledger`
   - `invoices backup`
+  - `invoices ui`
 
 ## Definition of “Optimal Codex Operation” for This Repo
 A Codex task is considered optimally executed when:

@@ -10,6 +10,7 @@ Implements the local-first invoice processing epic from `INVOICE_PROCESSING_EPIC
 - `invoices reconcile-ledger` – verify ledger integrity.
 - `invoices queue list|show|fix|approve` – review queue workflow.
 - `invoices backup` – backup ledger/queue/state/log files.
+- `invoices ui` – launch a simple local desktop UI with action buttons for non-CLI operators.
 
 ## Setup
 1. `python -m venv .venv && source .venv/bin/activate`
@@ -23,6 +24,10 @@ Implements the local-first invoice processing epic from `INVOICE_PROCESSING_EPIC
    - optional `enable_ocr` and `ocr_languages`
 5. Run `invoices doctor`.
 6. Run `invoices fetch-email`.
+
+### Optional non-CLI mode
+- Launch `invoices ui` to operate the same workflow using a button-based local desktop window.
+- The UI calls the same underlying processing logic used by CLI commands.
 
 ## Processing Notes
 - Supported files: PDF, CSV, XLSX/XLS, PNG/JPG/JPEG/TIFF.

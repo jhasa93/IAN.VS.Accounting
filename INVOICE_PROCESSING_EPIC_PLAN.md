@@ -22,6 +22,10 @@ Build a **local-first invoice processing system** that runs on the owner’s PC 
 
 ---
 
+### Operator UX note
+- MVP uses VS Code command execution, but a lightweight local UI wrapper is acceptable as long as it triggers the same local-first workflow and does not require a background daemon.
+
+
 ## 2) Core User Flow (MVP)
 1. Owner runs a command in VS Code: `invoices fetch-email`.
 2. System checks mailbox for unread/new invoice emails.

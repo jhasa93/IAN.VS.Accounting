@@ -12,6 +12,7 @@ from .google_services import build_services, ensure_gmail_label
 from .ledger import reconcile
 from .processing import process_new_email
 from .storage import QueueStore
+from .ui import run_ui
 
 app = typer.Typer(help="Invoice processing CLI")
 queue_app = typer.Typer(help="Queue operations")
@@ -117,6 +118,11 @@ def backup(config_path: Path = DEFAULT_CONFIG_PATH):
         if src.exists():
             shutil.copy2(src, dest / src.name)
     typer.echo(f"backup created at {dest}")
+
+
+@app.command("ui")
+def ui(config_path: Path = DEFAULT_CONFIG_PATH):
+    run_ui(config_path)
 
 
 if __name__ == "__main__":
