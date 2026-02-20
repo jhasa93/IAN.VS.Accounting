@@ -1,109 +1,122 @@
 from __future__ import annotations
 
-import time
-from pathlib import Path
-
-from openpyxl import Workbook, load_workbook
+from typing import Any
 
 from .models import LedgerRecord
 
 HEADERS = [
-    "Internal ID",
-    "Source Type",
-    "Source Email Message ID",
-    "Sender Email",
-    "Original File Name",
-    "Stored File Name",
-    "Drive File ID",
-    "Drive Folder Path",
-    "Vendor Name",
-    "Invoice Number",
-    "Invoice Date",
+    "Invoice Issued Date",
     "Due Date",
+    "Vendor Name",
+    "Vendor ICO/VAT",
+    "Language",
+    "Amount",
     "Currency",
-    "Subtotal",
     "Tax Amount",
-    "Total Amount",
     "Category",
-    "Extraction Confidence",
-    "Status",
-    "Review Notes",
-    "Created At",
-    "Updated At",
+    "Source",
+    "Drive File Link",
+    "Gmail Message ID",
 ]
 
 
-def ensure_workbook(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        return
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Invoices"
-    ws.append(HEADERS)
-    wb.save(path)
+def ensure_sheet_headers(sheets: Any, spreadsheet_id: str) -> None:
+    """Ensure the spreadsheet has the proper header row."""
+    try:
+        result = sheets.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range="A1:L1"
+        ).execute()
+        existing = result.get("values", [[]])
+        if existing and existing[0]:
+            return  # Headers already exist
+    except Exception:
+        pass  # Sheet might be empty
+    
+    # Write headers
+    sheets.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range="A1:L1",
+        valueInputOption="RAW",
+        body={"values": [HEADERS]}
+    ).execute()
 
 
-def append_or_update_record(path: Path, record: LedgerRecord, retries: int = 3) -> None:
-    ensure_workbook(path)
-    for attempt in range(retries):
-        try:
-            wb = load_workbook(path)
-            ws = wb["Invoices"]
-            id_col = 1
-            row_to_update = None
-            for row in range(2, ws.max_row + 1):
-                if ws.cell(row=row, column=id_col).value == record.internal_id:
-                    row_to_update = row
-                    break
-            values = [
-                record.internal_id,
-                record.source_type,
-                record.source_email_message_id,
-                record.sender_email,
-                record.original_file_name,
-                record.stored_file_name,
-                record.drive_file_id,
-                record.drive_folder_path,
-                record.vendor_name,
-                record.invoice_number,
-                record.invoice_date,
-                record.due_date,
-                record.currency,
-                record.subtotal,
-                record.tax_amount,
-                record.total_amount,
-                record.category,
-                record.extraction_confidence,
-                record.status,
-                record.review_notes,
-                record.created_at,
-                record.updated_at,
-            ]
-            if row_to_update:
-                for col, value in enumerate(values, start=1):
-                    ws.cell(row=row_to_update, column=col, value=value)
-            else:
-                ws.append(values)
-            wb.save(path)
-            return
-        except PermissionError:
-            if attempt == retries - 1:
-                raise
-            time.sleep(1.0)
+def append_or_update_record(sheets: Any, spreadsheet_id: str, record: LedgerRecord) -> None:
+    """Append or update a record in the Google Sheet."""
+    # Ensure headers exist
+    ensure_sheet_headers(sheets, spreadsheet_id)
+    
+    # Get all data to find if record exists (using Gmail Message ID as key)
+    result = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range="L:L"  # Gmail Message ID column
+    ).execute()
+    
+    values = result.get("values", [])
+    row_to_update = None
+    
+    # Find existing record (skip header row)
+    for idx, row in enumerate(values[1:], start=2):
+        if row and row[0] == record.gmail_message_id:
+            row_to_update = idx
+            break
+    
+    # Prepare record values
+    record_values = [
+        record.invoice_date,
+        record.due_date,
+        record.vendor_name,
+        record.vendor_vat,
+        record.language,
+        record.total_amount,
+        record.currency,
+        record.tax_amount,
+        record.category,
+        record.source_type,
+        record.drive_file_link,
+        record.gmail_message_id,
+    ]
+    
+    if row_to_update:
+        # Update existing row
+        sheets.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"A{row_to_update}:L{row_to_update}",
+            valueInputOption="RAW",
+            body={"values": [record_values]}
+        ).execute()
+    else:
+        # Append new row
+        sheets.spreadsheets().values().append(
+            spreadsheetId=spreadsheet_id,
+            range="A:L",
+            valueInputOption="RAW",
+            insertDataOption="INSERT_ROWS",
+            body={"values": [record_values]}
+        ).execute()
 
 
-def reconcile(path: Path) -> tuple[int, int]:
-    ensure_workbook(path)
-    wb = load_workbook(path)
-    ws = wb["Invoices"]
+def reconcile(sheets: Any, spreadsheet_id: str) -> tuple[int, int]:
+    """Check for duplicate Gmail Message IDs in the sheet."""
+    result = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range="L:L"  # Gmail Message ID column
+    ).execute()
+    
+    values = result.get("values", [])
+    if len(values) <= 1:
+        return 0, 0  # Only headers or empty
+    
     seen = set()
     dup = 0
-    for row in range(2, ws.max_row + 1):
-        internal_id = ws.cell(row=row, column=1).value
-        if not internal_id:
+    
+    for row in values[1:]:  # Skip header
+        if not row or not row[0]:
             continue
-        if internal_id in seen:
+        message_id = row[0]
+        if message_id in seen:
             dup += 1
-        seen.add(internal_id)
-    return ws.max_row - 1, dup
+        seen.add(message_id)
+    
+    return len(values) - 1, dup

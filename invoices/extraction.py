@@ -17,12 +17,16 @@ INVOICE_RE = re.compile(
     re.I,
 )
 TOTAL_RE = re.compile(r"(?:total|celkem|gesamt)\s*[:\-]?\s*([0-9]+(?:[.,][0-9]{1,2})?)", re.I)
+VAT_RE = re.compile(
+    r"(?:VAT|IČO|ICO|DIČ|DIC|IČ|IC|Tax ID|Registration No)\s*[:\-]?\s*([A-Z]{0,2}\s*[0-9\s]{6,15})",
+    re.I,
+)
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tiff"}
 
 
 def _validate(result: ExtractionResult) -> ExtractionResult:
     errs = []
-    for field in ["vendor_name", "invoice_number", "invoice_date", "currency"]:
+    for field in ["vendor_name", "invoice_date", "currency"]:
         if not getattr(result, field):
             errs.append(f"missing_{field}")
     if result.total_amount is None:
@@ -37,6 +41,37 @@ def _validate(result: ExtractionResult) -> ExtractionResult:
     if result.valid and result.confidence < 0.8:
         result.confidence = 0.8
     return result
+
+
+def _detect_language(text: str) -> str:
+    """Simple language detection based on common words."""
+    text_lower = text.lower()
+    
+    # Czech indicators
+    czech_words = ['faktura', 'celkem', 'dph', 'kč', 'částka', 'dodavatel', 'odběratel', 'ičo', 'dič']
+    czech_score = sum(1 for word in czech_words if word in text_lower)
+    
+    # German indicators
+    german_words = ['rechnung', 'gesamt', 'mwst', 'betrag', 'lieferant', 'kunde', 'steuernummer']
+    german_score = sum(1 for word in german_words if word in text_lower)
+    
+    # Spanish indicators
+    spanish_words = ['factura', 'total', 'iva', 'importe', 'proveedor', 'cliente', 'nif', 'cif']
+    spanish_score = sum(1 for word in spanish_words if word in text_lower)
+    
+    # English indicators
+    english_words = ['invoice', 'total', 'vat', 'amount', 'supplier', 'customer', 'tax id']
+    english_score = sum(1 for word in english_words if word in text_lower)
+    
+    scores = {
+        'cs': czech_score,
+        'de': german_score,
+        'es': spanish_score,
+        'en': english_score,
+    }
+    
+    max_lang = max(scores, key=scores.get)
+    return max_lang if scores[max_lang] > 0 else 'en'
 
 
 def _normalize_date(raw_value: str | None) -> str | None:
@@ -123,12 +158,17 @@ def extract_invoice(path: Path, enable_ocr: bool = True, ocr_languages: str = "e
     total_match = TOTAL_RE.search(text)
     total = float(total_match.group(1).replace(",", ".")) if total_match else None
     vendor = path.stem.split("_")[0] if "_" in path.stem else None
+    vat_match = VAT_RE.search(text)
+    vat = vat_match.group(1).strip() if vat_match else ""
+    language = _detect_language(text)
     res = ExtractionResult(
         vendor_name=vendor,
+        vendor_vat=vat,
         invoice_number=inv_no,
         invoice_date=date,
         currency=currency,
         total_amount=total,
+        language=language,
         confidence=0.55,
     )
     return _validate(res)

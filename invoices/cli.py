@@ -32,17 +32,22 @@ def doctor(config_path: Path = DEFAULT_CONFIG_PATH):
     cred_exists = Path(cfg.credentials_path).exists()
     checks.append(("credentials_file", cred_exists))
     try:
-        gmail, drive = build_services(cfg.credentials_path)
+        gmail, drive, sheets = build_services(cfg.credentials_path)
         gmail.users().labels().list(userId="me").execute()
         ensure_gmail_label(gmail, cfg.gmail_processed_label)
         drive.files().get(fileId=cfg.drive_root_folder_id, fields="id,name").execute()
+        if cfg.spreadsheet_id:
+            sheets.spreadsheets().get(spreadsheetId=cfg.spreadsheet_id).execute()
+            checks.append(("spreadsheet_access", True))
         checks.append(("gmail_access", True))
         checks.append(("processed_label", True))
         checks.append(("drive_access", True))
-    except Exception:
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
         checks.append(("gmail_access", False))
         checks.append(("processed_label", False))
         checks.append(("drive_access", False))
+        checks.append(("spreadsheet_access", False))
     for name, ok in checks:
         typer.echo(f"{name}: {'OK' if ok else 'FAIL'}")
 
@@ -57,7 +62,8 @@ def fetch_email(config_path: Path = DEFAULT_CONFIG_PATH):
 @app.command("reconcile-ledger")
 def reconcile_ledger(config_path: Path = DEFAULT_CONFIG_PATH):
     cfg = load_config(config_path)
-    rows, dup = reconcile(Path(cfg.workbook_path))
+    _, _, sheets = build_services(cfg.credentials_path)
+    rows, dup = reconcile(sheets, cfg.spreadsheet_id)
     typer.echo(f"rows={rows} duplicates={dup}")
 
 
@@ -113,7 +119,7 @@ def backup(config_path: Path = DEFAULT_CONFIG_PATH):
     cfg = load_config(config_path)
     dest = Path(cfg.backup_dir) / datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     dest.mkdir(parents=True, exist_ok=True)
-    for p in [cfg.workbook_path, cfg.queue_path, cfg.state_path, cfg.log_path]:
+    for p in [cfg.queue_path, cfg.state_path, cfg.log_path]:
         src = Path(p)
         if src.exists():
             shutil.copy2(src, dest / src.name)

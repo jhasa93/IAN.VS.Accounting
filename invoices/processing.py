@@ -42,7 +42,10 @@ def build_logger(log_path: Path) -> logging.Logger:
 
 
 def extract_links(text: str) -> list[str]:
-    return re.findall(r"https?://[^\s<>'\"]+", text)
+    """Extract HTTP/HTTPS links from text, stripping trailing punctuation."""
+    links = re.findall(r"https?://[^\s<>'\"]+", text)
+    # Strip common trailing punctuation that shouldn't be part of URLs
+    return [link.rstrip(')]},.;:!?') for link in links]
 
 
 def download_link(url: str, staging_dir: Path) -> Path | None:
@@ -74,11 +77,11 @@ def process_new_email(config: AppConfig) -> dict[str, int]:
     staging.mkdir(parents=True, exist_ok=True)
     queue = QueueStore(Path(config.queue_path))
     state = StateStore(Path(config.state_path))
-    gmail, drive = build_services(config.credentials_path)
+    gmail, drive, sheets = build_services(config.credentials_path)
     processed_label_id = ensure_gmail_label(gmail, config.gmail_processed_label)
 
     processed, queued, filed = 0, 0, 0
-    messages = fetch_new_messages(gmail, config.gmail_label, state.processed_ids())
+    messages = fetch_new_messages(gmail, config.gmail_label, processed_label_id, state.processed_ids())
     for msg in messages:
         processed += 1
         headers = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
@@ -95,9 +98,29 @@ def process_new_email(config: AppConfig) -> dict[str, int]:
             if ext not in ALLOWED_EXTENSIONS:
                 logger.warning("Unsupported attachment: %s", filename)
                 continue
+            
+            # Try inline data first
             data = part.get("body", {}).get("data")
+            
+            # If no inline data, fetch using attachmentId
             if not data:
+                attachment_id = part.get("body", {}).get("attachmentId")
+                if attachment_id:
+                    try:
+                        attachment = gmail.users().messages().attachments().get(
+                            userId="me",
+                            messageId=msg["id"],
+                            id=attachment_id
+                        ).execute()
+                        data = attachment.get("data")
+                    except Exception as exc:
+                        logger.warning("Failed to fetch attachment %s: %s", filename, exc)
+                        continue
+            
+            if not data:
+                logger.warning("No data for attachment: %s", filename)
                 continue
+                
             out = staging / f"{uuid.uuid4().hex}_{filename}"
             out.write_bytes(decode_b64url(data))
             staged_files.append((out, "Attachment"))
@@ -113,6 +136,23 @@ def process_new_email(config: AppConfig) -> dict[str, int]:
                     staged_files.append((dl, "Link"))
             except Exception as exc:
                 logger.warning("Link download failed %s: %s", link, exc)
+
+        # Prefer PDF over CSV when both are available for the same invoice
+        # Group by base name and prefer .pdf extension
+        file_preference = {}
+        for staged_path, source_type in staged_files:
+            base_name = staged_path.stem.split('_')[-1] if '_' in staged_path.stem else staged_path.stem
+            ext = staged_path.suffix.lower()
+            
+            if base_name not in file_preference:
+                file_preference[base_name] = (staged_path, source_type)
+            else:
+                # If we have a PDF, prefer it over CSV/Excel
+                current_ext = file_preference[base_name][0].suffix.lower()
+                if ext == '.pdf' and current_ext in ['.csv', '.xlsx', '.xls']:
+                    file_preference[base_name] = (staged_path, source_type)
+        
+        staged_files = list(file_preference.values())
 
         message_had_files = len(staged_files) > 0
         message_had_review = False
@@ -146,36 +186,32 @@ def process_new_email(config: AppConfig) -> dict[str, int]:
             year, month = derive_folder_path(result.invoice_date or datetime.utcnow().date().isoformat())
             year_id = ensure_folder(drive, config.drive_root_folder_id, year)
             month_id = ensure_folder(drive, year_id, month)
-            invoice_num = result.invoice_number or "UNKNOWN"
-            vendor = (result.vendor_name or "VENDOR").replace(" ", "_")
+            
+            # Build filename: {date}-{vendorName}-{amount}-{currency}.pdf
+            vendor = (result.vendor_name or "VENDOR").replace(" ", "_").replace("/", "-")
             dated = result.invoice_date or datetime.utcnow().date().isoformat()
-            target_name = f"{dated}_{vendor}_{invoice_num}{staged_path.suffix.lower()}"
+            amount = result.total_amount or 0.0
+            currency = result.currency or "XXX"
+            target_name = f"{dated}-{vendor}-{amount:.2f}-{currency}{staged_path.suffix.lower()}"
+            
             drive_id, _ = upload_invoice_file(drive, month_id, staged_path, target_name)
+            drive_link = f"https://drive.google.com/file/d/{drive_id}/view"
+            
             record = LedgerRecord(
-                internal_id=item.internal_id,
-                source_type=item.source_type,
-                source_email_message_id=item.source_email_message_id,
-                sender_email=item.sender_email,
-                original_file_name=item.original_file_name,
-                stored_file_name=target_name,
-                drive_file_id=drive_id,
-                drive_folder_path=f"Invoices/{year}/{month}",
-                vendor_name=result.vendor_name or "",
-                invoice_number=result.invoice_number or "",
                 invoice_date=result.invoice_date or "",
                 due_date=result.due_date or "",
-                currency=result.currency or "",
-                subtotal=result.subtotal,
-                tax_amount=result.tax_amount,
+                vendor_name=result.vendor_name or "",
+                vendor_vat=result.vendor_vat or "",
+                language=result.language or "en",
                 total_amount=result.total_amount or 0.0,
+                currency=result.currency or "",
+                tax_amount=result.tax_amount,
                 category=result.category,
-                extraction_confidence=result.confidence,
-                status="Filed",
-                review_notes=item.review_notes,
-                created_at=item.created_at.isoformat(),
-                updated_at=datetime.utcnow().isoformat(),
+                source_type=item.source_type,
+                drive_file_link=drive_link,
+                gmail_message_id=msg["id"],
             )
-            append_or_update_record(Path(config.workbook_path), record)
+            append_or_update_record(sheets, config.spreadsheet_id, record)
             item.status = "Filed"
             queue.update(item)
             filed += 1

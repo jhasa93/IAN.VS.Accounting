@@ -12,7 +12,7 @@ class AppConfig(BaseModel):
     gmail_label: str = "INBOX"
     gmail_processed_label: str = "INVOICE_PROCESSED"
     drive_root_folder_id: str = ""
-    workbook_path: str = "./data/master_ledger.xlsx"
+    spreadsheet_id: str = ""
     staging_dir: str = "./data/staging"
     queue_path: str = "./data/queue.json"
     state_path: str = "./data/state.json"

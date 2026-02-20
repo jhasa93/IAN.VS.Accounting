@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .venv/
 data/
+client_secret.json
+token.json
+invoices.config.json

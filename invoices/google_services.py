@@ -1,34 +1,70 @@
 from __future__ import annotations
 
 import base64
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from google.oauth2.service_account import Credentials
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/spreadsheets",
 ]
 
 
 def build_services(credentials_path: str):
-    creds = Credentials.from_service_account_file(credentials_path, scopes=SCOPES)
+    """Build Gmail and Drive services using OAuth credentials.
+    
+    On first run, opens browser for user consent. Token is saved for future use.
+    """
+    creds = None
+    token_path = Path(credentials_path).parent / "token.json"
+    
+    # Load existing token if available
+    if token_path.exists():
+        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+    
+    # If no valid credentials, run OAuth flow
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
+            creds = flow.run_local_server(port=0)
+        
+        # Save token for future use
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(creds.to_json(), encoding="utf-8")
+    
     gmail = build("gmail", "v1", credentials=creds)
     drive = build("drive", "v3", credentials=creds)
-    return gmail, drive
+    sheets = build("sheets", "v4", credentials=creds)
+    return gmail, drive, sheets
 
 
-def fetch_new_messages(gmail: Any, label: str, processed_ids: set[str]) -> list[dict[str, Any]]:
-    response = gmail.users().messages().list(userId="me", labelIds=[label], q="is:unread").execute()
+def fetch_new_messages(gmail: Any, label: str, processed_label_id: str, processed_ids: set[str]) -> list[dict[str, Any]]:
+    """Fetch messages from the given label that don't have the processed label."""
+    response = gmail.users().messages().list(
+        userId="me",
+        labelIds=[label]
+    ).execute()
     out: list[dict[str, Any]] = []
     for m in response.get("messages", []):
         if m["id"] in processed_ids:
             continue
+        # Get full message details to check labels
         detail = gmail.users().messages().get(userId="me", id=m["id"], format="full").execute()
+        # Skip if message already has the processed label
+        if processed_label_id in detail.get("labelIds", []):
+            continue
         out.append(detail)
     return out
 
@@ -50,12 +86,12 @@ def ensure_gmail_label(gmail: Any, label_name: str) -> str:
 
 
 def mark_message_processed(gmail: Any, message_id: str, processed_label_id: str) -> None:
+    """Add the processed label to a message."""
     gmail.users().messages().modify(
         userId="me",
         id=message_id,
         body={
             "addLabelIds": [processed_label_id],
-            "removeLabelIds": ["UNREAD"],
         },
     ).execute()
 
