@@ -1,3 +1,11 @@
+"""Utility script to view Google Drive folder structure.
+
+Displays the contents of your configured Drive root folder
+and any subfolders (year/month organization).
+
+Usage:
+    python check_drive.py
+"""
 from invoices.google_services import build_services
 from invoices.config import load_config
 

@@ -1,3 +1,14 @@
+"""Utility script to reset specific messages for reprocessing.
+
+Removes INVOICE_PROCESSED label and clears from state.json
+for selected message IDs, allowing them to be reprocessed.
+
+Useful when you want to reprocess specific invoices without
+resetting everything.
+
+Usage:
+    python reset_for_reprocessing.py
+"""
 from invoices.google_services import build_services
 from invoices.config import load_config
 

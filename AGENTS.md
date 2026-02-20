@@ -8,11 +8,12 @@ Your primary objective as an agent is to keep this workflow stable, idempotent, 
 ## Project Map
 - `invoices/cli.py` — Typer entrypoint (`init`, `doctor`, `fetch-email`, `reconcile-ledger`, `queue`, `backup`).
 - `invoices/processing.py` — main orchestration for Gmail fetch → extract → queue/review → Drive upload → ledger update.
-- `invoices/extraction.py` — extraction heuristics for CSV/XLSX/PDF/images, with optional OCR.
+- `invoices/extraction.py` — extraction heuristics for CSV/XLSX/PDF/images, with optional OCR and AI enhancement.
 - `invoices/google_services.py` — Gmail/Drive API wrappers and helper methods.
 - `invoices/ledger.py` — Excel workbook creation, append/update logic, and reconciliation.
 - `invoices/storage.py` — local JSON state and queue stores.
 - `invoices/models.py` — Pydantic models for queue items, extraction results, and ledger records.
+- `invoices/config.py` — configuration model and loader.
 - `tests/` — unit tests using mocks and dependency stubs.
 
 ## Key Runtime Contracts
@@ -22,7 +23,7 @@ Your primary objective as an agent is to keep this workflow stable, idempotent, 
 2. **Status flow**
    - Queue item starts in extracted state and becomes either `Needs Review` (missing required fields / low confidence) or `Filed`.
 3. **Required extracted fields for auto-filing**
-   - `vendor_name`, `invoice_number`, `invoice_date`, `currency`, `total_amount`.
+   - `vendor_name`, `vendor_vat`, `invoice_number`, `invoice_date`, `currency`, `total_amount`.
 4. **Drive layout**
    - Destination path must remain `Invoices/YYYY/MM` based on invoice date.
 5. **Ledger integrity**
@@ -69,6 +70,8 @@ invoices backup
 ### Extraction (`invoices/extraction.py`)
 - Keep parser deterministic and testable.
 - OCR is optional and must gracefully degrade if optional packages are missing.
+- AI enhancement is optional (requires API key + optional dependencies) and must gracefully degrade if disabled or dependencies missing.
+- AI enhancement triggers when confidence < threshold OR required fields are missing; it enhances results by filling gaps with vision model output.
 - When adding fields, update model + validation + tests consistently.
 
 ### Storage/Ledger

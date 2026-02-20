@@ -1,7 +1,40 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
 .venv/
+venv/
+ENV/
+
+# Application Data
 data/
+*.log
+
+# Credentials & Config
 client_secret.json
 token.json
 invoices.config.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary test files
+test_*.py
+debug_*.py

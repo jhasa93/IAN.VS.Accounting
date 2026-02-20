@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 import requests
 
 from .config import AppConfig
-from .extraction import extract_invoice
+from .extraction import extract_invoice, enhance_extraction_with_ai
 from .google_services import (
     build_services,
     decode_b64url,
@@ -28,7 +28,27 @@ from .ledger import append_or_update_record
 from .models import LedgerRecord, QueueItem
 from .storage import QueueStore, StateStore
 
+# Document types that can be downloaded from links
+DOCUMENT_EXTENSIONS = {".pdf", ".csv", ".xlsx", ".xls"}
+# All allowed extensions for attachments (includes scanned invoice images)
 ALLOWED_EXTENSIONS = {".pdf", ".csv", ".xlsx", ".xls", ".png", ".jpg", ".jpeg", ".tiff"}
+# Filename patterns that indicate non-invoice files (email decorations, logos, etc.)
+NON_INVOICE_PATTERNS = [
+    r'logo', r'icon', r'banner', r'header', r'footer', r'signature',
+    r'facebook', r'twitter', r'linkedin', r'instagram', r'youtube', r'social',
+    r'gcp_', r'hero_', r'googlelogo', r'tracking', r'pixel', r'badge',
+    r'button', r'arrow', r'folder-\d+', r'\d{10,}\.png$'  # Numbered tracking images
+]
+
+
+def is_likely_invoice_file(filename: str) -> bool:
+    """Check if filename looks like an invoice document vs email decoration."""
+    name_lower = filename.lower()
+    # Exclude files matching non-invoice patterns
+    for pattern in NON_INVOICE_PATTERNS:
+        if re.search(pattern, name_lower, re.I):
+            return False
+    return True
 
 
 def build_logger(log_path: Path) -> logging.Logger:
@@ -54,7 +74,11 @@ def download_link(url: str, staging_dir: Path) -> Path | None:
     parsed = urlparse(url)
     name = Path(parsed.path).name or f"download-{uuid.uuid4().hex[:8]}"
     ext = Path(name).suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS:
+    # Only download document files from links (not images - they're usually email decorations)
+    if ext not in DOCUMENT_EXTENSIONS:
+        return None
+    # Check if filename suggests it's not an invoice
+    if not is_likely_invoice_file(name):
         return None
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
@@ -99,6 +123,10 @@ def process_new_email(config: AppConfig) -> dict[str, int]:
             ext = Path(filename).suffix.lower()
             if ext not in ALLOWED_EXTENSIONS:
                 logger.warning("Unsupported attachment: %s", filename)
+                continue
+            # Skip attachments that look like email decorations
+            if not is_likely_invoice_file(filename):
+                logger.info("Skipping non-invoice attachment: %s", filename)
                 continue
             
             # Try inline data first
@@ -162,6 +190,18 @@ def process_new_email(config: AppConfig) -> dict[str, int]:
                 enable_ocr=config.enable_ocr,
                 ocr_languages=config.ocr_languages,
             )
+            
+            # Enhance with AI if enabled and result needs improvement
+            if config.enable_ai_enhancement:
+                result = enhance_extraction_with_ai(
+                    staged_path,
+                    result,
+                    provider=config.ai_provider,
+                    api_key=config.ai_api_key,
+                    model=config.ai_model,
+                    confidence_threshold=config.ai_confidence_threshold,
+                )
+            
             item = QueueItem(
                 internal_id=uuid.uuid4().hex,
                 source_type=source_type,  # type: ignore[arg-type]

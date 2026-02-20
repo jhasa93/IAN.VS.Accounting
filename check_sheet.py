@@ -1,3 +1,11 @@
+"""Utility script to view Google Sheets ledger contents.
+
+Displays all rows from your configured spreadsheet
+showing invoice records and their extracted data.
+
+Usage:
+    python check_sheet.py
+"""
 from invoices.google_services import build_services
 from invoices.config import load_config
 

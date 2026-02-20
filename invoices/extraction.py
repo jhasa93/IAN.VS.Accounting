@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import csv
+import json
 import re
 from pathlib import Path
 
@@ -35,7 +37,7 @@ COMPANY_NAME_RE = re.compile(
 
 def _validate(result: ExtractionResult) -> ExtractionResult:
     errs = []
-    for field in ["vendor_name", "invoice_date", "currency"]:
+    for field in ["vendor_name", "vendor_vat", "invoice_date", "currency"]:
         if not getattr(result, field):
             errs.append(f"missing_{field}")
     if result.total_amount is None:
@@ -205,3 +207,305 @@ def extract_invoice(path: Path, enable_ocr: bool = True, ocr_languages: str = "e
         confidence=0.55,
     )
     return _validate(res)
+
+
+def _encode_image_base64(path: Path) -> str:
+    """Encode image file to base64."""
+    with open(path, "rb") as f:
+        return base64.standard_b64encode(f.read()).decode("utf-8")
+
+
+def _convert_pdf_to_image_base64(path: Path) -> str:
+    """Convert first page of PDF to base64 image."""
+    try:
+        from pdf2image import convert_from_path
+        from io import BytesIO
+        import os
+        
+        # Try to find poppler in common locations
+        poppler_path = None
+        possible_paths = [
+            r"C:\poppler\poppler-24.08.0\Library\bin",
+            r"C:\Program Files\poppler\Library\bin",
+            r"C:\poppler\Library\bin",
+        ]
+        for p in possible_paths:
+            if os.path.exists(p):
+                poppler_path = p
+                break
+        
+        pages = convert_from_path(str(path), first_page=1, last_page=1, poppler_path=poppler_path)
+        if not pages:
+            return ""
+        
+        # Convert PIL image to JPEG bytes
+        buffer = BytesIO()
+        pages[0].save(buffer, format="JPEG", quality=95)
+        image_bytes = buffer.getvalue()
+        return base64.standard_b64encode(image_bytes).decode("utf-8")
+    except Exception:
+        return ""
+
+
+def _enhance_with_anthropic(path: Path, api_key: str, model: str, existing_result: ExtractionResult) -> ExtractionResult:
+    """Use Anthropic Claude vision to extract missing or low-confidence fields."""
+    try:
+        import anthropic
+    except ImportError:
+        return existing_result
+    
+    # Prepare image
+    suffix = path.suffix.lower()
+    if suffix in IMAGE_SUFFIXES:
+        image_data = _encode_image_base64(path)
+        media_type = "image/jpeg" if suffix in {".jpg", ".jpeg"} else "image/png"
+    elif suffix == ".pdf":
+        image_data = _convert_pdf_to_image_base64(path)
+        if not image_data:
+            return existing_result
+        media_type = "image/jpeg"
+    else:
+        # Can't process non-image formats with vision
+        return existing_result
+    
+    # Build prompt focusing on missing fields
+    missing_fields = []
+    if not existing_result.vendor_name:
+        missing_fields.append("vendor_name")
+    if not existing_result.invoice_number:
+        missing_fields.append("invoice_number")
+    if not existing_result.invoice_date:
+        missing_fields.append("invoice_date")
+    if not existing_result.currency:
+        missing_fields.append("currency")
+    if existing_result.total_amount is None:
+        missing_fields.append("total_amount")
+    if not existing_result.vendor_vat:
+        missing_fields.append("vendor_vat")
+    if not existing_result.due_date:
+        missing_fields.append("due_date")
+    
+    prompt = f"""You are an expert invoice data extraction assistant. Analyze this invoice image and extract the following information in JSON format.
+
+Focus on these fields (especially the missing ones: {', '.join(missing_fields) if missing_fields else 'all'}):
+- vendor_name: Company name (supplier/issuer)
+- vendor_vat: VAT/Tax ID number (IČO, DIČ, Tax ID, etc.)
+- invoice_number: Invoice/Faktura number
+- invoice_date: Invoice date in YYYY-MM-DD format
+- due_date: Due date in YYYY-MM-DD format
+- currency: Currency code (USD, EUR, CZK, etc.)
+- subtotal: Subtotal amount before tax (numeric)
+- tax_amount: Tax/VAT amount (numeric)
+- total_amount: Total amount (numeric)
+- language: Document language (en, cs, de, es)
+
+Current extraction results (may be incomplete or low confidence):
+{json.dumps(existing_result.model_dump(exclude={"validation_errors", "valid", "confidence"}), indent=2)}
+
+Return ONLY a JSON object with the extracted fields. Use null for fields you cannot find. For numeric fields, use numbers not strings.
+Be precise with dates (use YYYY-MM-DD format). Extract the complete vendor name including legal form (s.r.o., a.s., GmbH, Ltd, etc.)."""
+    
+    client = anthropic.Anthropic(api_key=api_key)
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=1024,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": image_data,
+                        },
+                    },
+                    {"type": "text", "text": prompt}
+                ],
+            }]
+        )
+        
+        # Parse response
+        text_content = response.content[0].text if response.content else ""
+        # Extract JSON from markdown code blocks if present
+        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text_content, re.DOTALL)
+        if json_match:
+            text_content = json_match.group(1)
+        
+        ai_data = json.loads(text_content)
+        
+        # Merge AI results with existing, preferring AI for missing/empty fields
+        merged = ExtractionResult(
+            vendor_name=ai_data.get("vendor_name") or existing_result.vendor_name,
+            vendor_vat=ai_data.get("vendor_vat") or existing_result.vendor_vat,
+            invoice_number=ai_data.get("invoice_number") or existing_result.invoice_number,
+            invoice_date=_normalize_date(ai_data.get("invoice_date")) or existing_result.invoice_date,
+            due_date=_normalize_date(ai_data.get("due_date")) or existing_result.due_date,
+            currency=(ai_data.get("currency") or existing_result.currency or "").upper() if ai_data.get("currency") or existing_result.currency else None,
+            subtotal=ai_data.get("subtotal") or existing_result.subtotal,
+            tax_amount=ai_data.get("tax_amount") or existing_result.tax_amount,
+            total_amount=ai_data.get("total_amount") or existing_result.total_amount,
+            category=ai_data.get("category") or existing_result.category,
+            language=ai_data.get("language") or existing_result.language,
+            confidence=0.9,  # High confidence for AI-enhanced results
+        )
+        return _validate(merged)
+    
+    except Exception as exc:
+        # Log error but return existing result
+        print(f"AI enhancement failed: {exc}")
+        return existing_result
+
+
+def _enhance_with_openai(path: Path, api_key: str, model: str, existing_result: ExtractionResult) -> ExtractionResult:
+    """Use OpenAI GPT-4 Vision to extract missing or low-confidence fields."""
+    try:
+        import openai
+    except ImportError:
+        return existing_result
+    
+    # Prepare image
+    suffix = path.suffix.lower()
+    if suffix in IMAGE_SUFFIXES:
+        image_data = _encode_image_base64(path)
+    elif suffix == ".pdf":
+        image_data = _convert_pdf_to_image_base64(path)
+        if not image_data:
+            return existing_result
+    else:
+        return existing_result
+    
+    # Build prompt
+    missing_fields = []
+    if not existing_result.vendor_name:
+        missing_fields.append("vendor_name")
+    if not existing_result.invoice_number:
+        missing_fields.append("invoice_number")
+    if not existing_result.invoice_date:
+        missing_fields.append("invoice_date")
+    if not existing_result.currency:
+        missing_fields.append("currency")
+    if existing_result.total_amount is None:
+        missing_fields.append("total_amount")
+    if not existing_result.vendor_vat:
+        missing_fields.append("vendor_vat")
+    if not existing_result.due_date:
+        missing_fields.append("due_date")
+    
+    prompt = f"""You are an expert invoice data extraction assistant. Analyze this invoice image and extract the following information in JSON format.
+
+Focus on these fields (especially the missing ones: {', '.join(missing_fields) if missing_fields else 'all'}):
+- vendor_name: Company name (supplier/issuer)
+- vendor_vat: VAT/Tax ID number (IČO, DIČ, Tax ID, etc.)
+- invoice_number: Invoice/Faktura number
+- invoice_date: Invoice date in YYYY-MM-DD format
+- due_date: Due date in YYYY-MM-DD format
+- currency: Currency code (USD, EUR, CZK, etc.)
+- subtotal: Subtotal amount before tax (numeric)
+- tax_amount: Tax/VAT amount (numeric)
+- total_amount: Total amount (numeric)
+- language: Document language (en, cs, de, es)
+
+Current extraction results (may be incomplete or low confidence):
+{json.dumps(existing_result.model_dump(exclude={"validation_errors", "valid", "confidence"}), indent=2)}
+
+Return ONLY a JSON object with the extracted fields. Use null for fields you cannot find. For numeric fields, use numbers not strings.
+Be precise with dates (use YYYY-MM-DD format). Extract the complete vendor name including legal form (s.r.o., a.s., GmbH, Ltd, etc.)."""
+    
+    client = openai.OpenAI(api_key=api_key)
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_data}",
+                        },
+                    },
+                    {"type": "text", "text": prompt}
+                ],
+            }],
+            max_tokens=1024,
+        )
+        
+        # Parse response
+        text_content = response.choices[0].message.content or ""
+        # Extract JSON from markdown code blocks if present
+        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text_content, re.DOTALL)
+        if json_match:
+            text_content = json_match.group(1)
+        
+        ai_data = json.loads(text_content)
+        
+        # Merge AI results with existing, preferring AI for missing/empty fields
+        merged = ExtractionResult(
+            vendor_name=ai_data.get("vendor_name") or existing_result.vendor_name,
+            vendor_vat=ai_data.get("vendor_vat") or existing_result.vendor_vat,
+            invoice_number=ai_data.get("invoice_number") or existing_result.invoice_number,
+            invoice_date=_normalize_date(ai_data.get("invoice_date")) or existing_result.invoice_date,
+            due_date=_normalize_date(ai_data.get("due_date")) or existing_result.due_date,
+            currency=(ai_data.get("currency") or existing_result.currency or "").upper() if ai_data.get("currency") or existing_result.currency else None,
+            subtotal=ai_data.get("subtotal") or existing_result.subtotal,
+            tax_amount=ai_data.get("tax_amount") or existing_result.tax_amount,
+            total_amount=ai_data.get("total_amount") or existing_result.total_amount,
+            category=ai_data.get("category") or existing_result.category,
+            language=ai_data.get("language") or existing_result.language,
+            confidence=0.9,  # High confidence for AI-enhanced results
+        )
+        return _validate(merged)
+    
+    except Exception as exc:
+        # Log error but return existing result
+        print(f"AI enhancement failed: {exc}")
+        return existing_result
+
+
+def enhance_extraction_with_ai(
+    path: Path,
+    existing_result: ExtractionResult,
+    provider: str,
+    api_key: str,
+    model: str,
+    confidence_threshold: float = 0.8,
+) -> ExtractionResult:
+    """
+    Enhance extraction results using AI vision models when confidence is low or fields are missing.
+    
+    Args:
+        path: Path to invoice file
+        existing_result: Initial extraction result from regex/OCR
+        provider: "anthropic" or "openai"
+        api_key: API key for the provider
+        model: Model name (e.g., "claude-3-5-sonnet-20241022" or "gpt-4o")
+        confidence_threshold: Only enhance if existing confidence is below this
+    
+    Returns:
+        Enhanced ExtractionResult with better confidence and more complete fields
+    """
+    # Skip if no API key provided
+    if not api_key:
+        return existing_result
+    
+    # Check if any important fields are missing (even if result is "valid")
+    has_missing_fields = (
+        not existing_result.vendor_vat
+        or not existing_result.invoice_number
+        or not existing_result.due_date
+        or existing_result.tax_amount is None
+        or existing_result.subtotal is None
+    )
+    
+    # Skip AI enhancement only if result is good AND has most fields filled
+    if existing_result.valid and existing_result.confidence >= confidence_threshold and not has_missing_fields:
+        return existing_result
+    
+    if provider.lower() == "anthropic":
+        return _enhance_with_anthropic(path, api_key, model, existing_result)
+    elif provider.lower() == "openai":
+        return _enhance_with_openai(path, api_key, model, existing_result)
+    else:
+        return existing_result

@@ -1,3 +1,16 @@
+"""Utility script to completely reset the system.
+
+WARNING: This will:
+- Remove INVOICE_PROCESSED labels from all Gmail messages
+- Clear local state.json (processed message IDs)
+- Clear queue.json (all queued items)
+- Delete all files from staging folder
+
+Use this to start fresh and reprocess all invoices from scratch.
+
+Usage:
+    python reset_everything.py
+"""
 from invoices.google_services import build_services
 from invoices.config import load_config
 import json

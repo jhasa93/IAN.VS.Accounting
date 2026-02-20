@@ -1,0 +1,19 @@
+{
+  "credentials_path": "client_secret.json",
+  "gmail_label": "INBOX",
+  "gmail_processed_label": "INVOICE_PROCESSED",
+  "drive_root_folder_id": "YOUR_DRIVE_FOLDER_ID_HERE",
+  "spreadsheet_id": "YOUR_SPREADSHEET_ID_HERE",
+  "staging_dir": "./data/staging",
+  "queue_path": "./data/queue.json",
+  "state_path": "./data/state.json",
+  "log_path": "./data/invoices.log",
+  "backup_dir": "./data/backups",
+  "enable_ocr": true,
+  "ocr_languages": "eng+deu+spa+ces",
+  "enable_ai_enhancement": true,
+  "ai_provider": "openai",
+  "ai_api_key": "YOUR_OPENAI_API_KEY_HERE",
+  "ai_model": "gpt-4o-mini",
+  "ai_confidence_threshold": 0.8
+}
