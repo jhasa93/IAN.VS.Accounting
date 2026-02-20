@@ -11,7 +11,7 @@ from pypdf import PdfReader
 from .models import ExtractionResult
 
 CURRENCY_RE = re.compile(r"\b(USD|EUR|GBP|AUD|CAD|INR|CZK)\b", re.I)
-DATE_RE = re.compile(r"\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[./]\d{1,2}[./]\d{4})\b")
+DATE_RE = re.compile(r"\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[./]\s*\d{1,2}[./]\s*\d{4})\b")
 INVOICE_RE = re.compile(
     r"(?:invoice|faktura|factura|rechnung)\s*(?:#|number|no|num(?:ero)?|cislo|č(?:\.|\s*)?íslo)?\s*[:\-]?\s*((?=[A-Z0-9\-/]*\d)[A-Z0-9\-/]+)",
     re.I,
@@ -25,6 +25,11 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tiff"}
 VENDOR_LINE_RE = re.compile(
     r"(?:supplier|vendor|dodavatel|dodavatel[ée]?|from|vystavil|issuer)\s*[:\-]?\s*([^\n\r]{2,80})",
     re.I,
+)
+# Czech company name pattern (s.r.o., a.s., spol. s r.o., etc.) at start of document
+COMPANY_NAME_RE = re.compile(
+    r"^([A-ZÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ][^\n]{3,60}(?:s\.r\.o\.|a\.s\.|spol\.\s*s\s*r\.o\.|v\.o\.s\.))",
+    re.I | re.MULTILINE,
 )
 
 
@@ -89,10 +94,18 @@ def _normalize_date(raw_value: str | None) -> str | None:
 
 
 def _extract_vendor_name(text: str, path: Path) -> str | None:
+    # Try Czech company name pattern first
+    company_match = COMPANY_NAME_RE.search(text)
+    if company_match:
+        vendor = company_match.group(1).strip(" ,.-")
+        if vendor and not vendor.lower().startswith(('variabilní', 'konstantní', 'specifický')):
+            return vendor
+    
+    # Try generic vendor line pattern
     match = VENDOR_LINE_RE.search(text)
     if match:
         vendor = re.split(r"\s{2,}", match.group(1).strip())[0].strip(" ,.-")
-        if vendor:
+        if vendor and not vendor.lower().startswith(('variabilní', 'konstantní', 'specifický')):
             return vendor
 
     # Fallback to filename-derived value (without UUID prefixes from staging)

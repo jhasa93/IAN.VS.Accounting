@@ -140,22 +140,17 @@ def process_new_email(config: AppConfig) -> dict[str, int]:
             except Exception as exc:
                 logger.warning("Link download failed %s: %s", link, exc)
 
-        # Prefer PDF over CSV when both are available for the same invoice
-        # Group by base name and prefer .pdf extension
-        file_preference = {}
-        for staged_path, source_type in staged_files:
-            base_name = staged_path.stem.split('_')[-1] if '_' in staged_path.stem else staged_path.stem
-            ext = staged_path.suffix.lower()
-            
-            if base_name not in file_preference:
-                file_preference[base_name] = (staged_path, source_type)
-            else:
-                # If we have a PDF, prefer it over CSV/Excel
-                current_ext = file_preference[base_name][0].suffix.lower()
-                if ext == '.pdf' and current_ext in ['.csv', '.xlsx', '.xls']:
-                    file_preference[base_name] = (staged_path, source_type)
+        # Prefer PDF over CSV when both are available from links
+        # If any PDF exists from links, remove all CSV/Excel files from links
+        link_files = [(p, st) for p, st in staged_files if st == "Link"]
+        attachment_files = [(p, st) for p, st in staged_files if st == "Attachment"]
         
-        staged_files = list(file_preference.values())
+        has_pdf_link = any(p.suffix.lower() == '.pdf' for p, _ in link_files)
+        if has_pdf_link:
+            # Keep only PDF files from links, discard CSV/Excel
+            link_files = [(p, st) for p, st in link_files if p.suffix.lower() not in ['.csv', '.xlsx', '.xls']]
+        
+        staged_files = attachment_files + link_files
 
         message_had_files = len(staged_files) > 0
         message_had_review = False
